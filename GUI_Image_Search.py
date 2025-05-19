@@ -9,6 +9,7 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics.pairwise import cosine_distances
 import matplotlib.pyplot as plt
 from sklearn.metrics.pairwise import cosine_distances
+from scipy.spatial.distance import minkowski
 
 import tkinter as tk
 from tkinter import filedialog, Frame
@@ -92,13 +93,26 @@ def extract_features(img_path):
     feat = np.hstack([color, shape, fourier, grid, edge])
     return feat
 
-# Hàm tìm kiếm
+# Hàm tìm kiếm sử dụng cosine distance
 def find_similar(query_path, k=3):
     qf = extract_features(query_path)
     qf_norm = scaler.transform([qf])
     dists = cosine_distances(qf_norm, features_norm).flatten()
     idx = np.argsort(dists)[:k]
     return [(image_paths[i], dists[i]) for i in idx]
+
+# Hàm tìm kiếm sử dụng L3 distance
+def find_similar_using_L3(query_path, k=3):
+    qf = extract_features(query_path)
+    qf_norm = scaler.transform([qf])
+    
+    l3_dists = np.array([
+        minkowski(qf_norm[0], feat, p=3)
+        for feat in features_norm
+    ])
+    
+    idx = np.argsort(l3_dists)[:k]
+    return [(image_paths[i], l3_dists[i]) for i in idx]
 
 def load_image(path, size=(200, 200)):
     img = Image.open(path).convert("RGB")
@@ -113,16 +127,31 @@ def show_results(query_path):
     query_label.image = img
     query_title.config(text=os.path.basename(query_path))
 
-    # Hiển thị ảnh kết quả
-    results = find_similar(query_path)
-    for i in range(3):
-        if i < len(results):
-            img_path, dist = results[i]
-            img = load_image(img_path)
-            result_labels[i].config(image=img)
-            result_labels[i].image = img
-            result_titles[i].config(text=f"{os.path.basename(img_path)}\nCosine distance: {dist:.4f}")
+    # Tìm kết quả theo cosine và L3
+    cosine_results = find_similar(query_path)
+    l3_results = find_similar_using_L3(query_path)
 
+    # Hiển thị ảnh COSINE
+    for i in range(3):
+        if i < len(cosine_results):
+            img_path, cos_dist = cosine_results[i]
+            img = load_image(img_path)
+            cosine_labels[i].config(image=img)
+            cosine_labels[i].image = img
+            cosine_titles[i].config(
+                text=f"{os.path.basename(img_path)}\nCosine: {cos_dist:.4f}"
+            )
+
+    # Hiển thị ảnh L3
+    for i in range(3):
+        if i < len(l3_results):
+            img_path, l3_dist = l3_results[i]
+            img = load_image(img_path)
+            l3_labels[i].config(image=img)
+            l3_labels[i].image = img
+            l3_titles[i].config(
+                text=f"{os.path.basename(img_path)}\nL3 dist: {l3_dist:.4f}"
+            )
 
 def browse_image():
     file_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg *.png *.jpeg")])
@@ -146,7 +175,7 @@ features_norm = scaler.fit_transform(features)
 root = tk.Tk()
 root.title("🔍 Image Similarity Search")
 root.configure(bg="#f0f0f0")
-root.geometry("900x700")
+root.geometry("900x1200")
 
 # Nút chọn ảnh truy vấn
 browse_btn = tk.Button(root, text="📁 Chọn ảnh truy vấn", font=("Helvetica", 12), bg="#4CAF50", fg="white", padx=20, pady=5, command=browse_image)
@@ -169,20 +198,66 @@ results_title.pack(pady=10)
 results_frame = Frame(root, bg="#f0f0f0")
 results_frame.pack(pady=10)
 
+cosine_row_title = tk.Label(root, text="📐 Kết quả theo Cosine Distance", font=("Helvetica", 14, "bold"), bg="#f0f0f0", fg="#333")
+cosine_row_title.pack()
+
 result_labels = []
 result_titles = []
 
+# for i in range(3):
+#     sub_frame = Frame(results_frame, bg="#f0f0f0", padx=15)
+#     sub_frame.grid(row=0, column=i)
+
+#     lbl_title = tk.Label(sub_frame, text=f"Similar #{i+1}", font=("Helvetica", 12, "bold"), bg="#f0f0f0")
+#     lbl_title.pack()
+
+#     lbl = tk.Label(sub_frame, bg="#dddddd", width=200, height=200)
+#     lbl.pack(pady=10)
+
+#     result_titles.append(lbl_title)
+#     result_labels.append(lbl)
+
+cosine_frame = Frame(root, bg="#f0f0f0")
+cosine_frame.pack()
+
+cosine_labels = []
+cosine_titles = []
+
 for i in range(3):
-    sub_frame = Frame(results_frame, bg="#f0f0f0", padx=15)
+    sub_frame = Frame(cosine_frame, bg="#f0f0f0", padx=15)
     sub_frame.grid(row=0, column=i)
 
-    lbl_title = tk.Label(sub_frame, text=f"Similar #{i+1}", font=("Helvetica", 12, "bold"), bg="#f0f0f0")
+    lbl_title = tk.Label(sub_frame, text="", font=("Helvetica", 11), bg="#f0f0f0")
     lbl_title.pack()
 
     lbl = tk.Label(sub_frame, bg="#dddddd", width=200, height=200)
-    lbl.pack(pady=10)
+    lbl.pack(pady=5)
 
-    result_titles.append(lbl_title)
-    result_labels.append(lbl)
+    cosine_titles.append(lbl_title)
+    cosine_labels.append(lbl)
+
+# L3 row
+l3_row_title = tk.Label(root, text="📏 Kết quả theo L3 Distance", font=("Helvetica", 14, "bold"), bg="#f0f0f0", fg="#333")
+l3_row_title.pack(pady=(20, 0))
+
+l3_frame = Frame(root, bg="#f0f0f0")
+l3_frame.pack()
+
+l3_labels = []
+l3_titles = []
+
+for i in range(3):
+    sub_frame = Frame(l3_frame, bg="#f0f0f0", padx=15)
+    sub_frame.grid(row=0, column=i)
+
+    lbl_title = tk.Label(sub_frame, text="", font=("Helvetica", 11), bg="#f0f0f0")
+    lbl_title.pack()
+
+    lbl = tk.Label(sub_frame, bg="#dddddd", width=200, height=200)
+    lbl.pack(pady=5)
+
+    l3_titles.append(lbl_title)
+    l3_labels.append(lbl)
+
 
 root.mainloop()
