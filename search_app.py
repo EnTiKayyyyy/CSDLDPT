@@ -1,3 +1,5 @@
+# search_app.py
+
 import os
 import cv2
 import numpy as np
@@ -5,8 +7,11 @@ from sklearn.metrics.pairwise import cosine_distances
 from scipy.spatial.distance import minkowski
 import pickle
 import tkinter as tk
-from tkinter import filedialog, Frame, Label, Button
+from tkinter import filedialog, Frame, Label, Button, Radiobutton, StringVar
 from PIL import Image, ImageTk
+
+# --- Dán lại 6 hàm extract_* và hàm extract_all_features vào đây ---
+# (Lấy từ các câu trả lời trước)
 from skimage.measure import regionprops, label
 from skimage.feature import canny
 from scipy.fft import fft
@@ -71,113 +76,198 @@ def extract_edge_histogram(img, mask, grid_size=(4,4)):
     hist = np.array(hist, dtype=float)
     if hist.max()>0: hist /= hist.max()
     return hist.tolist()
-
-def extract_features(img_path):
+    
+def extract_all_features(img_path):
     img = cv2.imread(img_path)
-    if img is None: return None
+    if img is None:
+        return None
     mask = segment_image(img)
-    color = extract_color_histogram(img, mask)
-    shape = extract_shape_features(mask)
-    fourier = extract_fourier_descriptor(mask)
-    grid = extract_grid_code(mask)
-    edge = extract_edge_histogram(img, mask)
-    feat = np.hstack([color, shape, fourier, grid, edge])
-    return feat
+    
+    features = {
+        "color": extract_color_histogram(img, mask),
+        "shape": extract_shape_features(mask),
+        "fourier": extract_fourier_descriptor(mask),
+        "grid": extract_grid_code(mask),
+        "edge": extract_edge_histogram(img, mask)
+    }
+    return features
+# --- KẾT THÚC CÁC HÀM TRÍCH XUẤT ---
+
 
 # --- TẢI DATABASE ---
+DB_LOADED = False
 try:
     print("Đang tải database...")
-    features_norm = np.load('features_db.npy')
+    db = {
+        'combined': np.load('db_combined.npy'),
+        'color': np.load('db_color.npy'),
+        'shape': np.load('db_shape.npy'),
+        'fourier': np.load('db_fourier.npy'),
+        'grid': np.load('db_grid.npy'),
+        'edge': np.load('db_edge.npy'),
+    }
     with open('paths_db.pkl', 'rb') as f:
         image_paths = pickle.load(f)
     with open('scaler.pkl', 'rb') as f:
         scaler = pickle.load(f)
+    with open('indices.pkl', 'rb') as f:
+        indices = pickle.load(f)
+    
     print("Tải database thành công.")
     DB_LOADED = True
 except FileNotFoundError:
     print("Lỗi: Không tìm thấy tệp database. Vui lòng chạy 'feature_extractor.py' trước.")
-    DB_LOADED = False
 
 # --- CÁC HÀM TÌM KIẾM ---
-def find_similar(query_path, k=3):
-    qf = extract_features(query_path)
-    if qf is None: return []
-    qf_norm = scaler.transform([qf])
-    dists = cosine_distances(qf_norm, features_norm).flatten()
+def get_query_feature(query_path, search_type):
+    """Trích xuất, chuẩn hóa và cắt đặc trưng của ảnh truy vấn."""
+    features = extract_all_features(query_path)
+    if features is None:
+        return None
+    
+    query_combined = np.hstack(list(features.values()))
+    query_norm_combined = scaler.transform([query_combined])
+
+    if search_type == 'combined':
+        return query_norm_combined
+    else:
+        feature_keys = ['color', 'shape', 'fourier', 'grid', 'edge']
+        key_index = feature_keys.index(search_type)
+        start_idx = sum(indices[:key_index])
+        end_idx = start_idx + indices[key_index]
+        return query_norm_combined[:, start_idx:end_idx]
+
+def find_similar_cosine(query_feature, db_features, k=3):
+    """Tìm kiếm bằng Cosine Distance."""
+    dists = cosine_distances(query_feature, db_features).flatten()
     idx = np.argsort(dists)[:k]
     return [(image_paths[i], dists[i]) for i in idx]
 
-def find_similar_using_L3(query_path, k=3):
-    qf = extract_features(query_path)
-    if qf is None: return []
-    qf_norm = scaler.transform([qf])
-    l3_dists = np.array([minkowski(qf_norm[0], feat, p=3) for feat in features_norm])
-    idx = np.argsort(l3_dists)[:k]
-    return [(image_paths[i], l3_dists[i]) for i in idx]
+def find_similar_l3(query_feature, db_features, k=3):
+    """Tìm kiếm bằng L3 Distance (Minkowski p=3)."""
+    dists = np.array([minkowski(query_feature[0], feat, p=3) for feat in db_features])
+    idx = np.argsort(dists)[:k]
+    return [(image_paths[i], dists[i]) for i in idx]
 
 # --- PHẦN GIAO DIỆN NGƯỜI DÙNG (GUI) ---
+# Biến toàn cục để lưu đường dẫn ảnh đang truy vấn
+current_query_path = None
+
+def center_window(win, width, height):
+    """Hàm để canh giữa cửa sổ trên màn hình."""
+    screen_width = win.winfo_screenwidth()
+    screen_height = win.winfo_screenheight()
+    x = int((screen_width/2) - (width/2))
+    y = int((screen_height/2) - (height/2))
+    win.geometry(f'{width}x{height}+{x}+{y}')
+
 def load_image(path, size=(200, 200)):
     img = Image.open(path).convert("RGB")
     img = img.resize(size)
     return ImageTk.PhotoImage(img)
 
 def show_results(query_path):
+    global current_query_path
+    current_query_path = query_path # Lưu lại đường dẫn
+
+    search_type = search_type_var.get()
+    
+    # Cập nhật tiêu đề
+    title_text = f"Đặc trưng: {search_type.capitalize()}"
+    cosine_row_title.config(text=f"📐 Kết quả theo Cosine - {title_text}")
+    l3_row_title.config(text=f"📏 Kết quả theo L3 - {title_text}")
+
     # Hiển thị ảnh truy vấn
     img = load_image(query_path)
-    query_label.config(image=img)
-    query_label.image = img
+    query_label.config(image=img); query_label.image = img
     query_title.config(text=os.path.basename(query_path))
 
-    # Tìm kết quả
-    cosine_results = find_similar(query_path, k=3)
-    l3_results = find_similar_using_L3(query_path, k=3)
+    # Lấy đặc trưng ảnh truy vấn
+    query_feature = get_query_feature(query_path, search_type)
+    if query_feature is None:
+        print("Không thể xử lý ảnh truy vấn.")
+        return
+
+    # Lấy CSDL đặc trưng tương ứng
+    db_features = db[search_type]
+
+    # Tìm và hiển thị kết quả cho cả hai phương pháp
+    cosine_results = find_similar_cosine(query_feature, db_features, k=3)
+    l3_results = find_similar_l3(query_feature, db_features, k=3)
 
     # Hiển thị kết quả Cosine
     for i in range(3):
         if i < len(cosine_results):
-            img_path, cos_dist = cosine_results[i]
+            img_path, dist = cosine_results[i]
             img = load_image(img_path)
-            cosine_labels[i].config(image=img)
-            cosine_labels[i].image = img
-            cosine_titles[i].config(text=f"{os.path.basename(img_path)}\nCosine: {cos_dist:.4f}")
+            cosine_labels[i].config(image=img); cosine_labels[i].image = img
+            cosine_titles[i].config(text=f"{os.path.basename(img_path)}\nCosine: {dist:.4f}")
+        else:
+            cosine_labels[i].config(image=None); cosine_titles[i].config(text="")
 
     # Hiển thị kết quả L3
     for i in range(3):
         if i < len(l3_results):
-            img_path, l3_dist = l3_results[i]
+            img_path, dist = l3_results[i]
             img = load_image(img_path)
-            l3_labels[i].config(image=img)
-            l3_labels[i].image = img
-            l3_titles[i].config(text=f"{os.path.basename(img_path)}\nL3 dist: {l3_dist:.4f}")
+            l3_labels[i].config(image=img); l3_labels[i].image = img
+            l3_titles[i].config(text=f"{os.path.basename(img_path)}\nL3: {dist:.4f}")
+        else:
+            l3_labels[i].config(image=None); l3_titles[i].config(text="")
 
 def browse_image():
     file_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg *.png *.jpeg")])
     if file_path:
         show_results(file_path)
 
+def on_feature_select():
+    """Hàm được gọi khi người dùng chọn Radiobutton, tự động reload kết quả."""
+    if current_query_path:
+        print(f"Reloading results for {os.path.basename(current_query_path)} with feature '{search_type_var.get()}'")
+        show_results(current_query_path)
+
 # --- CỬA SỔ CHÍNH ---
 root = tk.Tk()
 root.title("🔍 Image Similarity Search")
 root.configure(bg="#f0f0f0")
-root.geometry("900x1200")
+APP_WIDTH = 800
+APP_HEIGHT = 1050 # Giảm chiều cao cho hợp lý
+center_window(root, APP_WIDTH, APP_HEIGHT)
 
-# Nếu database được tải thành công, hiển thị giao diện
+
 if DB_LOADED:
     browse_btn = Button(root, text="📁 Chọn ảnh truy vấn", font=("Helvetica", 12), bg="#4CAF50", fg="white", padx=20, pady=5, command=browse_image)
     browse_btn.pack(pady=10)
 
+    # --- Khung chọn loại đặc trưng ---
+    options_frame = Frame(root, bg="#f0f0f0", pady=10)
+    options_frame.pack()
+    Label(options_frame, text="Chọn loại đặc trưng:", font=("Helvetica", 12, "bold"), bg="#f0f0f0").pack(side=tk.LEFT, padx=10)
+    
+    search_type_var = StringVar(value="combined")
+    
+    search_options = [
+        ("Tổng hợp", "combined"), ("Màu sắc", "color"), ("Hình dạng", "shape"),
+        ("Fourier", "fourier"), ("Lưới", "grid"), ("Cạnh", "edge")
+    ]
+    for text, value in search_options:
+        # Thêm command='on_feature_select' vào Radiobutton
+        Radiobutton(
+            options_frame, text=text, variable=search_type_var, value=value, 
+            font=("Helvetica", 11), bg="#f0f0f0", command=on_feature_select
+        ).pack(side=tk.LEFT)
+
+    
     query_frame = Frame(root, bg="#f0f0f0")
-    query_frame.pack(pady=20)
+    query_frame.pack(pady=10)
     query_title = Label(query_frame, text="Ảnh truy vấn", font=("Helvetica", 14, "bold"), bg="#f0f0f0")
     query_title.pack()
     query_label = Label(query_frame, bg="#dddddd", width=200, height=200)
     query_label.pack(pady=10)
 
-    results_title = Label(root, text="🎯 Ảnh tương đồng nhất", font=("Helvetica", 16, "bold"), bg="#f0f0f0", fg="#444")
-    results_title.pack(pady=10)
-
+    # --- Khung kết quả ---
     # Hàng kết quả Cosine
-    cosine_row_title = Label(root, text="📐 Kết quả theo Cosine Distance", font=("Helvetica", 14, "bold"), bg="#f0f0f0", fg="#333")
+    cosine_row_title = Label(root, text="📐 Kết quả theo Cosine", font=("Helvetica", 14, "bold"), bg="#f0f0f0", fg="#333")
     cosine_row_title.pack()
     cosine_frame = Frame(root, bg="#f0f0f0")
     cosine_frame.pack()
@@ -193,7 +283,7 @@ if DB_LOADED:
         cosine_labels.append(lbl)
 
     # Hàng kết quả L3
-    l3_row_title = Label(root, text="📏 Kết quả theo L3 Distance", font=("Helvetica", 14, "bold"), bg="#f0f0f0", fg="#333")
+    l3_row_title = Label(root, text="📏 Kết quả theo L3", font=("Helvetica", 14, "bold"), bg="#f0f0f0", fg="#333")
     l3_row_title.pack(pady=(20, 0))
     l3_frame = Frame(root, bg="#f0f0f0")
     l3_frame.pack()
@@ -208,7 +298,6 @@ if DB_LOADED:
         l3_titles.append(lbl_title)
         l3_labels.append(lbl)
 else:
-    # Hiển thị thông báo lỗi nếu không tải được database
     error_label = Label(root, text="Lỗi: Không tìm thấy tệp database.\nVui lòng chạy 'feature_extractor.py' trước.",
                         font=("Helvetica", 14), fg="red", bg="#f0f0f0")
     error_label.pack(pady=100)
