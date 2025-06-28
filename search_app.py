@@ -1,5 +1,3 @@
-# search_app.py
-
 import os
 import cv2
 import numpy as np
@@ -9,9 +7,6 @@ import pickle
 import tkinter as tk
 from tkinter import filedialog, Frame, Label, Button, Radiobutton, StringVar
 from PIL import Image, ImageTk
-
-# --- Dán lại 6 hàm extract_* và hàm extract_all_features vào đây ---
-# (Lấy từ các câu trả lời trước)
 from skimage.measure import regionprops, label
 from skimage.feature import canny
 from scipy.fft import fft
